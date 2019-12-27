@@ -1,0 +1,119 @@
+name: Build v2ray rules files .dat
+on: 
+  schedule:
+    - cron: "0 22 * * *"
+  push:
+    branches:
+      - master
+      - hidden
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Go 1.13
+        uses: actions/setup-go@v1
+        with:
+          go-version: 1.13
+        id: go
+
+      - name: Set $GOPATH and more variables
+        run: |
+          echo "::set-env name=GOPATH::$(dirname $GITHUB_WORKSPACE)"
+          echo "::set-env name=NAME::Released on $(date +%Y%m%d%H%M)"
+          echo "::set-env name=TAG_NAME::$(date +%Y%m%d%H%M)"
+          echo "::set-env name=GEOIP_REPO::github.com/v2ray/geoip"
+          echo "::set-env name=GEOSITE_REPO::github.com/v2ray/domain-list-community"
+          echo "::set-env name=GOOGLE_URL::https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/google.china.conf"
+          echo "::set-env name=APPLE_URL::https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/apple.china.conf"
+          echo "::set-env name=GFWLIST_URL::https://cokebar.github.io/gfwlist2dnsmasq/gfwlist_domain.txt"
+          echo "::set-env name=Blocked_DOMAINS_URL::https://raw.githubusercontent.com/wongsyrone/domain-block-list/master/domains.txt"
+          echo "::set-env name=CHINA_DOMAINS_URL::https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf"
+          echo "::set-env name=Profiles_URL::https://raw.githubusercontent.com/ConnersHua/Profiles/master/Shadow/Pro.conf"
+          echo "::add-path::$(dirname $GITHUB_WORKSPACE)/bin"
+        shell: bash
+
+      - name: Checkout branch named hidden of this repo
+        uses: actions/checkout@v2
+        with:
+          ref: hidden
+
+      - name: Get GeoLite2 file
+        run: |
+          curl -sSL -O https://geolite.maxmind.com/download/geoip/database/GeoLite2-Country-CSV.zip
+          unzip GeoLite2-Country-CSV.zip
+          rm -f GeoLite2-Country-CSV.zip
+          mv GeoLite2* geoip
+
+      - name: Generate geoip.dat file
+        run: |
+          go get -u -v -insecure $GEOIP_REPO
+          geoip --country=./geoip/GeoLite2-Country-Locations-en.csv --ipv4=./geoip/GeoLite2-Country-Blocks-IPv4.csv --ipv6=./geoip/GeoLite2-Country-Blocks-IPv6.csv
+          mkdir -p ./publish
+          mv ./geoip.dat ./publish/
+
+      - name: Download geosite project
+        run: |
+          go get -u -v -insecure $GEOSITE_REPO
+
+      - name: Get and add gfwlist domains into temp-proxy.txt file
+        run: |
+          curl -sSL $GFWLIST_URL > temp-proxy.txt
+      
+      - name: Get and add google domains into temp-proxy.txt file
+        run: |
+          curl -sSL $GOOGLE_URL | awk -F '/' '{print $2}' >> temp-proxy.txt
+
+      - name: Get and add apple domains into temp-proxy.txt file
+        run: |
+          curl -sSL $APPLE_URL | awk -F '/' '{print $2}' >> temp-proxy.txt
+
+      - name: Get and add proxy domains from @ConnersHua/Profiles into temp-proxy.txt file
+        run: |
+          curl -sSL $Profiles_URL | awk -F ',' '/^DOMAIN(,|\-SUFFIX,).+PROXY/ {print $2}' >> temp-proxy.txt
+          
+      - name: Get and add blocked domains from @wongsyrone/domain-block-list into temp-proxy.txt file
+        run: |
+          curl -sSL $Blocked_DOMAINS_URL >> temp-proxy.txt
+
+      - name: Get and add direct domains from @ConnersHua/Profiles into temp-direct.txt file
+        run: |
+          curl -sSL $Profiles_URL | awk -F ',' '/^DOMAIN(,|\-SUFFIX,).+DIRECT/ {print $2}' > temp-direct.txt
+
+      - name: Get and add chinalist domains into temp-direct.txt file
+        run: |
+          curl -sSL $CHINA_DOMAINS_URL | awk -F '/' '{print $2}' >> temp-direct.txt
+
+      - name: Get and add rejected domains from @ConnersHua/Profiles into category-ads-all
+        run: |
+          cd $GOPATH/src/$GEOSITE_REPO/data
+          curl -sSL $Profiles_URL | awk -F ',' '/^DOMAIN(,|\-SUFFIX,).+REJECT/ {print $2}' > profilereject
+          echo "include:profilereject" >> category-ads-all
+
+      - name: Add proxy and direct domains from the branch named hidden of this repo to appropriate temp files
+        run: |
+          cat proxy.txt >> temp-proxy.txt
+          cat direct.txt >> temp-direct.txt
+
+      - name: Remove repeated domains and write domains to appropriate list
+        run: |
+          cat temp-proxy.txt | sort --ignore-case -u > $GOPATH/src/$GEOSITE_REPO/data/proxylist
+          cat temp-direct.txt | sort --ignore-case -u > $GOPATH/src/$GEOSITE_REPO/data/directlist
+
+      - name: Add lists into appropriate category
+        run: |
+          cd $GOPATH/src/$GEOSITE_REPO/data
+          echo "include:proxylist" >> geolocation-\!cn
+          echo "include:directlist" >> cn
+
+      - name: Build geosite.dat file
+        run: |
+          domain-list-community
+          mv ./dlc.dat ./publish/geosite.dat
+
+      - name: Release dat files
+        uses: Ricky-Hao/action-release@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET_PATH: publish 
