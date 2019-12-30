@@ -1,7 +1,7 @@
 name: Build v2ray rules files .dat
 on: 
   schedule:
-    - cron: "0 23 * * 2"
+    - cron: "0 0 * * 2"
   push:
     branches:
       - master
